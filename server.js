@@ -1,71 +1,210 @@
-// server.js - Starter Express server for Week 2 assignment
+// server.js
 
-// Import required modules
-const express = require('express');
-const bodyParser = require('body-parser');
-const { v4: uuidv4 } = require('uuid');
+import express from "express";
+import bodyParser from "body-parser";
+import { v4 as uuidv4 } from "uuid";
 
-// Initialize Express app
+// Custom Errors
+class NotFoundError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "NotFoundError";
+    this.status = 404;
+  }
+}
+class ValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ValidationError";
+    this.status = 400;
+  }
+}
+
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
-// Middleware setup
+// In-memory data store for products
+const products = [];
+
+// Middleware: Logger
+function logger(req, res, next) {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+}
+
+// Middleware: Authentication
+function authMiddleware(req, res, next) {
+  const apiKey = req.header("x-api-key");
+  if (!apiKey || apiKey !== "mysecretapikey") {
+    return res.status(401).json({ error: "Unauthorized: Invalid or missing API key" });
+  }
+  next();
+}
+
+// Middleware: Validation for product create/update
+function validateProduct(req, res, next) {
+  const { name, description, price, category, inStock } = req.body;
+  if (
+    typeof name !== "string" ||
+    typeof description !== "string" ||
+    typeof price !== "number" ||
+    typeof category !== "string" ||
+    typeof inStock !== "boolean"
+  ) {
+    return next(new ValidationError("Invalid product data"));
+  }
+  next();
+}
+
+// Middleware: Global error handler
+function errorHandler(err, req, res, next) {
+  if (res.headersSent) return next(err);
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || "Internal Server Error" });
+}
+
+// Middleware: Async wrapper to catch errors
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+// Parse JSON bodies
 app.use(bodyParser.json());
 
-// Sample in-memory products database
-let products = [
-  {
-    id: '1',
-    name: 'Laptop',
-    description: 'High-performance laptop with 16GB RAM',
-    price: 1200,
-    category: 'electronics',
-    inStock: true
-  },
-  {
-    id: '2',
-    name: 'Smartphone',
-    description: 'Latest model with 128GB storage',
-    price: 800,
-    category: 'electronics',
-    inStock: true
-  },
-  {
-    id: '3',
-    name: 'Coffee Maker',
-    description: 'Programmable coffee maker with timer',
-    price: 50,
-    category: 'kitchen',
-    inStock: false
-  }
-];
+// Use logger middleware globally
+app.use(logger);
 
-// Root route
-app.get('/', (req, res) => {
-  res.send('Welcome to the Product API! Go to /api/products to see all products.');
+// Root route "Hello World"
+app.get("/", (req, res) => {
+  res.send("Hello World");
 });
 
-// TODO: Implement the following routes:
-// GET /api/products - Get all products
-// GET /api/products/:id - Get a specific product
-// POST /api/products - Create a new product
-// PUT /api/products/:id - Update a product
-// DELETE /api/products/:id - Delete a product
+// Below routes require authentication
+app.use("/api/products", authMiddleware);
 
-// Example route implementation for GET /api/products
-app.get('/api/products', (req, res) => {
-  res.json(products);
-});
+// RESTful API Routes
 
-// TODO: Implement custom middleware for:
-// - Request logging
-// - Authentication
-// - Error handling
+// GET /api/products - list with filtering, pagination
+app.get(
+  "/api/products",
+  asyncHandler(async (req, res) => {
+    let filtered = products;
 
-// Start the server
+    // Filter by category query param
+    if (req.query.category) {
+      filtered = filtered.filter(
+        (p) => p.category.toLowerCase() === req.query.category.toLowerCase()
+      );
+    }
+
+    // Pagination
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+
+    const paginated = filtered.slice(startIndex, endIndex);
+
+    res.json({
+      page,
+      limit,
+      total: filtered.length,
+      data: paginated,
+    });
+  })
+);
+
+// GET /api/products/:id
+app.get(
+  "/api/products/:id",
+  asyncHandler(async (req, res, next) => {
+    const product = products.find((p) => p.id === req.params.id);
+    if (!product) throw new NotFoundError("Product not found");
+    res.json(product);
+  })
+);
+
+// POST /api/products - create new product
+app.post(
+  "/api/products",
+  validateProduct,
+  asyncHandler(async (req, res) => {
+    const { name, description, price, category, inStock } = req.body;
+    const newProduct = {
+      id: uuidv4(),
+      name,
+      description,
+      price,
+      category,
+      inStock,
+    };
+    products.push(newProduct);
+    res.status(201).json(newProduct);
+  })
+);
+
+// PUT /api/products/:id - update product
+app.put(
+  "/api/products/:id",
+  validateProduct,
+  asyncHandler(async (req, res, next) => {
+    const productIndex = products.findIndex((p) => p.id === req.params.id);
+    if (productIndex === -1) throw new NotFoundError("Product not found");
+    const { name, description, price, category, inStock } = req.body;
+    products[productIndex] = {
+      id: req.params.id,
+      name,
+      description,
+      price,
+      category,
+      inStock,
+    };
+    res.json(products[productIndex]);
+  })
+);
+
+// DELETE /api/products/:id
+app.delete(
+  "/api/products/:id",
+  asyncHandler(async (req, res, next) => {
+    const productIndex = products.findIndex((p) => p.id === req.params.id);
+    if (productIndex === -1) throw new NotFoundError("Product not found");
+    products.splice(productIndex, 1);
+    res.status(204).send();
+  })
+);
+
+// GET /api/products/search?name= - search by name substring
+app.get(
+  "/api/products/search",
+  asyncHandler(async (req, res) => {
+    const nameQuery = req.query.name;
+    if (!nameQuery) {
+      return res
+        .status(400)
+        .json({ error: "Missing required query parameter: name" });
+    }
+    const matched = products.filter((p) =>
+      p.name.toLowerCase().includes(nameQuery.toLowerCase())
+    );
+    res.json(matched);
+  })
+);
+
+// GET /api/products/stats - product count by category
+app.get(
+  "/api/products/stats",
+  asyncHandler(async (req, res) => {
+    const stats = products.reduce((acc, product) => {
+      acc[product.category] = (acc[product.category] || 0) + 1;
+      return acc;
+    }, {});
+    res.json(stats);
+  })
+);
+
+// Global error handler
+app.use(errorHandler);
+
 app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
-
-// Export the app for testing purposes
-module.exports = app; 
